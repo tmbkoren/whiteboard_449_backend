@@ -55,17 +55,6 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
 
 
-@app.get("/public-route")
-async def public_route():
-    return {"message": "This is a public route."}
-
-
-@app.get("/protected-route")
-async def protected_route(user: dict = Depends(get_current_user)):
-    # The 'user' object is now the decoded JWT payload
-    return {"message": "This is a protected route.", "user_payload": user}
-
-
 @app.get("/api/check-onboarded")
 async def check_onboarded(user: dict = Depends(get_current_user)):
     user_id = user.get("sub")
@@ -151,6 +140,22 @@ async def get_user_projects(token: Annotated[str, Depends(oauth2_scheme)]):
     return {"projects": response}
 
 
+@app.get('/api/get-project/{project_id}')
+async def get_project_details(project_id: str, token: Annotated[str, Depends(oauth2_scheme)]):
+    # I need to return project details along with the user's role in that project
+    user = get_current_user(token).get("sub")
+    membership = supabase_service.table("project_member").select(
+        "*").eq("user_id", user).eq("project_id", project_id).single().execute()
+    if not membership.data:
+        raise HTTPException(
+            status_code=403, detail="You do not have access to this project")
+    project = supabase_service.table("project").select(
+        "*").eq("project_id", project_id).single().execute()
+    project_data = project.data
+    project_data["role"] = membership.data["role"]
+    return {"project": project_data}
+
+
 @app.post('/api/add-collaborator')
 async def add_collaborator(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
     data = await request.json()
@@ -179,3 +184,58 @@ async def add_collaborator(request: Request, token: Annotated[str, Depends(oauth
     print("Database response for adding collaborator:",
           response)  # Debugging line
     return {"message": "Collaborator added successfully"}
+
+
+@app.post('/api/create-whiteboard')
+async def create_whiteboard(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
+    data = await request.json()
+    user = get_current_user(token).get("sub")
+    project_id = data.get("project_id")
+    whiteboard_name = data.get("whiteboard_name")
+    print("Received whiteboard creation request with data:", data)  # Debugging line
+    if not project_id or not whiteboard_name:
+        raise HTTPException(
+            status_code=400, detail="Project ID and whiteboard name are required")
+    membership = supabase_service.table("project_member").select(
+        "*").eq("user_id", user).eq("project_id", project_id).single().execute()
+    if not membership.data or membership.data["role"] not in ["editor", "owner"]:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to add whiteboards to this project")
+    response = supabase_service.rpc('create_whiteboard', {
+        'project_id': project_id,
+        'whiteboard_name': whiteboard_name
+    }).execute()
+    print("Database response for whiteboard creation:",
+          response)  # Debugging line
+    return {"message": "Whiteboard created successfully"}
+
+
+@app.get('/api/get-whiteboards/{project_id}')
+async def get_whiteboards(project_id: str, token: Annotated[str, Depends(oauth2_scheme)]):
+    user = get_current_user(token).get("sub")
+    membership = supabase_service.table("project_member").select(
+        "*").eq("user_id", user).eq("project_id", project_id).single().execute()
+    if not membership.data:
+        raise HTTPException(
+            status_code=403, detail="You do not have access to this project's whiteboards")
+    response = supabase_service.rpc('getprojectwhiteboards', {
+        'lookup_project_id': project_id
+    }).execute()
+    return {"whiteboards": response.data}
+
+
+@app.get('/api/get-whiteboard/{whiteboard_id}')
+async def get_whiteboard_details(whiteboard_id: str, token: Annotated[str, Depends(oauth2_scheme)]):
+    user = get_current_user(token).get("sub")
+    whiteboard_response = supabase_service.table("whiteboards").select(
+        "*").eq("whiteboard_id", whiteboard_id).single().execute()
+    if not whiteboard_response.data:
+        raise HTTPException(
+            status_code=404, detail="Whiteboard not found")
+    project_id = whiteboard_response.data["project_id"]
+    membership = supabase_service.table("project_member").select(
+        "*").eq("user_id", user).eq("project_id", project_id).single().execute()
+    if not membership.data:
+        raise HTTPException(
+            status_code=403, detail="You do not have access to this whiteboard")
+    return {"whiteboard": whiteboard_response.data}
