@@ -114,9 +114,88 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
 
 
-@app.get("/public-route")
-async def public_route():
-    return {"message": "This is a public route."}
+@app.get("/api/check-onboarded")
+async def check_onboarded(user: dict = Depends(get_current_user)):
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=400, detail="User ID not found in token")
+
+    response = supabase.from_("profiles").select(
+        "username").eq("user_id", user_id).single().execute()
+    # if response.error:
+    #     raise HTTPException(status_code=500, detail="Database query failed")
+
+    onboarded = bool(response.data["username"])
+    return {"isOnboarded": onboarded}
+
+
+@app.get("/api/users/check-username-availability")
+async def check_username_availability(username: str):
+    response = supabase.from_("profiles").select(
+        "username").eq("username", username).execute()
+    # if response.error and response.status_code != 406:  # 406 means no rows found
+    #     raise HTTPException(status_code=500, detail="Database query failed")
+    print("Database response for username check:", response)  # Debugging line
+
+    is_available = len(response.data) == 0
+    # Debugging line
+    print(f"Username '{username}' availability: {is_available}")
+    return {"isAvailable": is_available}
+
+
+@app.patch('/api/users/me/set-username')
+async def set_username(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
+    data = await request.json()
+    username = data.get("username")
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+
+    payload = get_current_user(token)
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=400, detail="User ID not found in token")
+
+    try:
+        response = supabase_service.table("profiles").update(
+            {"username": username}).eq("user_id", user_id).execute()
+    # if response.error:
+    #     raise HTTPException(status_code=500, detail="Failed to update username")
+    except PostgrestAPIError as e:
+        raise HTTPException(status_code=500, detail=f"API Error: {str(e)}")
+
+    return {"message": "Username updated successfully"}
+
+
+@app.post('/api/create-project')
+async def create_new_project(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
+    data = await request.json()
+    user = get_current_user(token).get("sub")
+    project_name = data.get("project_name")
+    print("Received project creation request with data:", data)  # Debugging line
+    if not project_name:
+        raise HTTPException(status_code=400, detail="Project name is required")
+    response = supabase_service.rpc('create_project', {
+        'project_name': project_name,
+        'project_owner': user
+    }).execute()
+    print("Database response for project creation:", response)  # Debugging line
+    return {"message": "New project created successfully"}
+
+@app.get('/api/get-projects')
+async def get_user_projects(token: Annotated[str, Depends(oauth2_scheme)]):
+    user = get_current_user(token).get("sub")
+    matches = supabase_service.table("project_member").select(
+        "*").eq("user_id", user).execute()
+    response = []
+    for record in matches.data:
+        project = supabase_service.table("project").select(
+            "*").eq("project_id", record["project_id"]).single().execute()
+        project.data["role"] = record["role"]
+        response.append(project.data)
+    return {"projects": response}
 
 
 @app.get("/protected-route")
@@ -217,6 +296,20 @@ async def get_user_projects(token: Annotated[str, Depends(oauth2_scheme)]):
         project.data["owner_username"] = owner_username
         response.append(project.data)
     return {"projects": response}
+@app.get('/api/get-project/{project_id}')
+async def get_project_details(project_id: str, token: Annotated[str, Depends(oauth2_scheme)]):
+    # I need to return project details along with the user's role in that project
+    user = get_current_user(token).get("sub")
+    membership = supabase_service.table("project_member").select(
+        "*").eq("user_id", user).eq("project_id", project_id).single().execute()
+    if not membership.data:
+        raise HTTPException(
+            status_code=403, detail="You do not have access to this project")
+    project = supabase_service.table("project").select(
+        "*").eq("project_id", project_id).single().execute()
+    project_data = project.data
+    project_data["role"] = membership.data["role"]
+    return {"project": project_data}
 
 
 @app.post('/api/add-collaborator')
@@ -247,3 +340,59 @@ async def add_collaborator(request: Request, token: Annotated[str, Depends(oauth
     print("Database response for adding collaborator:",
           response)  # Debugging line
     return {"message": "Collaborator added successfully"}
+
+
+
+@app.post('/api/create-whiteboard')
+async def create_whiteboard(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
+    data = await request.json()
+    user = get_current_user(token).get("sub")
+    project_id = data.get("project_id")
+    whiteboard_name = data.get("whiteboard_name")
+    print("Received whiteboard creation request with data:", data)  # Debugging line
+    if not project_id or not whiteboard_name:
+        raise HTTPException(
+            status_code=400, detail="Project ID and whiteboard name are required")
+    membership = supabase_service.table("project_member").select(
+        "*").eq("user_id", user).eq("project_id", project_id).single().execute()
+    if not membership.data or membership.data["role"] not in ["editor", "owner"]:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to add whiteboards to this project")
+    response = supabase_service.rpc('create_whiteboard', {
+        'project_id': project_id,
+        'whiteboard_name': whiteboard_name
+    }).execute()
+    print("Database response for whiteboard creation:",
+          response)  # Debugging line
+    return {"message": "Whiteboard created successfully"}
+
+
+@app.get('/api/get-whiteboards/{project_id}')
+async def get_whiteboards(project_id: str, token: Annotated[str, Depends(oauth2_scheme)]):
+    user = get_current_user(token).get("sub")
+    membership = supabase_service.table("project_member").select(
+        "*").eq("user_id", user).eq("project_id", project_id).single().execute()
+    if not membership.data:
+        raise HTTPException(
+            status_code=403, detail="You do not have access to this project's whiteboards")
+    response = supabase_service.rpc('getprojectwhiteboards', {
+        'lookup_project_id': project_id
+    }).execute()
+    return {"whiteboards": response.data}
+
+
+@app.get('/api/get-whiteboard/{whiteboard_id}')
+async def get_whiteboard_details(whiteboard_id: str, token: Annotated[str, Depends(oauth2_scheme)]):
+    user = get_current_user(token).get("sub")
+    whiteboard_response = supabase_service.table("whiteboards").select(
+        "*").eq("whiteboard_id", whiteboard_id).single().execute()
+    if not whiteboard_response.data:
+        raise HTTPException(
+            status_code=404, detail="Whiteboard not found")
+    project_id = whiteboard_response.data["project_id"]
+    membership = supabase_service.table("project_member").select(
+        "*").eq("user_id", user).eq("project_id", project_id).single().execute()
+    if not membership.data:
+        raise HTTPException(
+            status_code=403, detail="You do not have access to this whiteboard")
+    return {"whiteboard": whiteboard_response.data}
