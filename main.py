@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Annotated
 from fastapi import FastAPI, Depends, HTTPException, status, Request, WebSocket, WebSocketDisconnect
@@ -385,14 +386,51 @@ async def get_whiteboards(project_id: str, token: Annotated[str, Depends(oauth2_
 async def get_whiteboard_details(whiteboard_id: str, token: Annotated[str, Depends(oauth2_scheme)]):
     user = get_current_user(token).get("sub")
     whiteboard_response = supabase_service.table("whiteboards").select(
-        "*").eq("whiteboard_id", whiteboard_id).single().execute()
+        "*").eq("id", whiteboard_id).single().execute()
     if not whiteboard_response.data:
         raise HTTPException(
             status_code=404, detail="Whiteboard not found")
-    project_id = whiteboard_response.data["project_id"]
+    project_id = supabase_service.table("project_whiteboard").select(
+        "project_id").eq("whiteboard_id", whiteboard_id).single().execute().data["project_id"]
     membership = supabase_service.table("project_member").select(
         "*").eq("user_id", user).eq("project_id", project_id).single().execute()
     if not membership.data:
         raise HTTPException(
             status_code=403, detail="You do not have access to this whiteboard")
     return {"whiteboard": whiteboard_response.data}
+
+@app.websocket("/ws/whiteboard/{whiteboard_id}/{client_id}")
+async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_id: str):
+    print(f"WebSocket connection attempt for whiteboard: {whiteboard_id}")
+    await manager.connect(websocket)
+    print(f"Client {client_id} connected to whiteboard WebSocket")
+    try:
+        await manager.broadcast(f"User {client_id} joined whiteboard {whiteboard_id}")
+        while True:
+            res = await websocket.receive_text()
+            data = json.loads(res)
+            print(f"Data received on whiteboard WebSocket: {data}")
+            print(f"Received from {client_id} on whiteboard {whiteboard_id}: {data["elements"] if 'elements' in data else data  }")
+            message = res
+            if data["type"] == "UPDATE_WHITEBOARD":
+                if "elements" in data:
+                    # Persist the whiteboard state to the database
+                    update_response = supabase_service.table("whiteboards").update({
+                        "elements": data["elements"]
+                    }).eq("id", whiteboard_id).execute()
+                if "appState" in data:
+                    update_response = supabase_service.table("whiteboards").update({
+                        "app_state": data["appState"]
+                    }).eq("id", whiteboard_id).execute()
+            
+            await manager.broadcast(message)
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        print(f"Client {client_id} disconnected from whiteboard WebSocket")
+        try:
+            await manager.broadcast(f"User {client_id} left whiteboard {whiteboard_id}")
+        except Exception as e:
+            print(f"Error broadcasting disconnect: {e}")
+    except Exception as e:
+        print(f"WebSocket error for {client_id} on whiteboard {whiteboard_id}: {e}")
+        manager.disconnect(websocket)
