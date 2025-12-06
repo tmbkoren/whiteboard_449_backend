@@ -390,8 +390,12 @@ async def get_whiteboard_details(whiteboard_id: str, token: Annotated[str, Depen
     if not whiteboard_response.data:
         raise HTTPException(
             status_code=404, detail="Whiteboard not found")
-    project_id = supabase_service.table("project_whiteboard").select(
-        "project_id").eq("whiteboard_id", whiteboard_id).single().execute().data["project_id"]
+    project_id_response = supabase_service.table("project_whiteboard").select(
+        "project_id").eq("whiteboard_id", whiteboard_id).single().execute()
+    if not project_id_response.data:
+        raise HTTPException(
+            status_code=404, detail="Whiteboard project relationship not found")
+    project_id = project_id_response.data["project_id"]
     membership = supabase_service.table("project_member").select(
         "*").eq("user_id", user).eq("project_id", project_id).single().execute()
     if not membership.data:
@@ -410,9 +414,9 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
             res = await websocket.receive_text()
             data = json.loads(res)
             print(f"Data received on whiteboard WebSocket: {data}")
-            print(f"Received from {client_id} on whiteboard {whiteboard_id}: {data["elements"] if 'elements' in data else data  }")
+            print(f"Received from {client_id} on whiteboard {whiteboard_id}: {data['elements'] if 'elements' in data else data}")
             message = res
-            if data["type"] == "UPDATE_WHITEBOARD":
+            if data.get("type") == "UPDATE_WHITEBOARD":
                 if "elements" in data:
                     # Persist the whiteboard state to the database
                     update_response = supabase_service.table("whiteboards").update({
