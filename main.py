@@ -145,31 +145,6 @@ async def check_username_availability(username: str):
     return {"isAvailable": is_available}
 
 
-@app.patch('/api/users/me/set-username')
-async def set_username(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
-    data = await request.json()
-    username = data.get("username")
-    if not username:
-        raise HTTPException(status_code=400, detail="Username is required")
-
-    payload = get_current_user(token)
-
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(
-            status_code=400, detail="User ID not found in token")
-
-    try:
-        response = supabase_service.table("profiles").update(
-            {"username": username}).eq("user_id", user_id).execute()
-    # if response.error:
-    #     raise HTTPException(status_code=500, detail="Failed to update username")
-    except PostgrestAPIError as e:
-        raise HTTPException(status_code=500, detail=f"API Error: {str(e)}")
-
-    return {"message": "Username updated successfully"}
-
-
 @app.post('/api/create-project')
 async def create_new_project(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
     data = await request.json()
@@ -184,20 +159,6 @@ async def create_new_project(request: Request, token: Annotated[str, Depends(oau
     }).execute()
     print("Database response for project creation:", response)  # Debugging line
     return {"message": "New project created successfully"}
-
-@app.get('/api/get-projects')
-async def get_user_projects(token: Annotated[str, Depends(oauth2_scheme)]):
-    user = get_current_user(token).get("sub")
-    matches = supabase_service.table("project_member").select(
-        "*").eq("user_id", user).execute()
-    response = []
-    for record in matches.data:
-        project = supabase_service.table("project").select(
-            "*").eq("project_id", record["project_id"]).single().execute()
-        project.data["role"] = record["role"]
-        response.append(project.data)
-    return {"projects": response}
-
 
 @app.get("/protected-route")
 async def protected_route(user: dict = Depends(get_current_user)):
@@ -205,36 +166,6 @@ async def protected_route(user: dict = Depends(get_current_user)):
     return {"message": "This is a protected route.", "user_payload": user}
 
 
-@app.get("/api/check-onboarded")
-async def check_onboarded(user: dict = Depends(get_current_user)):
-    user_id = user.get("sub")
-    if not user_id:
-        raise HTTPException(
-            status_code=400, detail="User ID not found in token")
-
-    response = supabase.from_("profiles").select(
-        "username").eq("user_id", user_id).single().execute()
-    # if response.error:
-    #     raise HTTPException(status_code=500, detail="Database query failed")
-
-    onboarded = bool(response.data["username"])
-    return {"isOnboarded": onboarded}
-
-
-@app.get("/api/users/check-username-availability")
-async def check_username_availability(username: str):
-    response = supabase.from_("profiles").select(
-        "username").eq("username", username).execute()
-    # if response.error and response.status_code != 406:  # 406 means no rows found
-    #     raise HTTPException(status_code=500, detail="Database query failed")
-    print("Database response for username check:", response)  # Debugging line
-
-    is_available = len(response.data) == 0
-    # Debugging line
-    print(f"Username '{username}' availability: {is_available}")
-    return {"isAvailable": is_available}
-
-
 @app.patch('/api/users/me/set-username')
 async def set_username(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
     data = await request.json()
@@ -258,22 +189,6 @@ async def set_username(request: Request, token: Annotated[str, Depends(oauth2_sc
         raise HTTPException(status_code=500, detail=f"API Error: {str(e)}")
 
     return {"message": "Username updated successfully"}
-
-
-@app.post('/api/create-project')
-async def create_new_project(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
-    data = await request.json()
-    user = get_current_user(token).get("sub")
-    project_name = data.get("project_name")
-    print("Received project creation request with data:", data)  # Debugging line
-    if not project_name:
-        raise HTTPException(status_code=400, detail="Project name is required")
-    response = supabase_service.rpc('create_project', {
-        'project_name': project_name,
-        'project_owner': user
-    }).execute()
-    print("Database response for project creation:", response)  # Debugging line
-    return {"message": "New project created successfully"}
 
 
 @app.get('/api/get-projects')
@@ -297,6 +212,8 @@ async def get_user_projects(token: Annotated[str, Depends(oauth2_scheme)]):
         project.data["owner_username"] = owner_username
         response.append(project.data)
     return {"projects": response}
+
+
 @app.get('/api/get-project/{project_id}')
 async def get_project_details(project_id: str, token: Annotated[str, Depends(oauth2_scheme)]):
     # I need to return project details along with the user's role in that project
