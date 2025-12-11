@@ -343,6 +343,9 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
                     update_response = supabase_service.table("whiteboards").update({
                         "app_state": data["appState"]
                     }).eq("id", whiteboard_id).execute()
+            elif data.get("type") == "NEW_MESSAGE":
+                # Optionally, handle chat messages separately if needed
+                pass
             
             await manager.broadcast(message)
     except WebSocketDisconnect:
