@@ -26,6 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
@@ -33,12 +34,14 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        print(f"Connection added. Total connections: {len(self.active_connections)}")
+        print(
+            f"Connection added. Total connections: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-        print(f"Connection removed. Total connections: {len(self.active_connections)}")
+        print(
+            f"Connection removed. Total connections: {len(self.active_connections)}")
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
         try:
@@ -47,7 +50,8 @@ class ConnectionManager:
             print(f"Error sending personal message: {e}")
 
     async def broadcast(self, message: str):
-        print(f"Broadcasting to {len(self.active_connections)} connections: {message}")
+        print(
+            f"Broadcasting to {len(self.active_connections)} connections: {message}")
         disconnected = []
         for connection in self.active_connections:
             try:
@@ -59,7 +63,9 @@ class ConnectionManager:
         for conn in disconnected:
             self.disconnect(conn)
 
+
 manager = ConnectionManager()
+
 
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
@@ -159,6 +165,7 @@ async def create_new_project(request: Request, token: Annotated[str, Depends(oau
     }).execute()
     print("Database response for project creation:", response)  # Debugging line
     return {"message": "New project created successfully"}
+
 
 @app.get("/protected-route")
 async def protected_route(user: dict = Depends(get_current_user)):
@@ -260,7 +267,6 @@ async def add_collaborator(request: Request, token: Annotated[str, Depends(oauth
     return {"message": "Collaborator added successfully"}
 
 
-
 @app.post('/api/create-whiteboard')
 async def create_whiteboard(request: Request, token: Annotated[str, Depends(oauth2_scheme)]):
     data = await request.json()
@@ -318,7 +324,10 @@ async def get_whiteboard_details(whiteboard_id: str, token: Annotated[str, Depen
     if not membership.data:
         raise HTTPException(
             status_code=403, detail="You do not have access to this whiteboard")
-    return {"whiteboard": whiteboard_response.data}
+    chat_data = supabase_service.table("chat_messages").select(
+        "*").eq("whiteboard_id", whiteboard_id).order("timestamp", desc=True).limit(40).execute()
+    return {"whiteboard": whiteboard_response.data, "chat_messages": chat_data.data}
+
 
 @app.websocket("/ws/whiteboard/{whiteboard_id}/{client_id}")
 async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_id: str):
@@ -331,7 +340,8 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
             res = await websocket.receive_text()
             data = json.loads(res)
             print(f"Data received on whiteboard WebSocket: {data}")
-            print(f"Received from {client_id} on whiteboard {whiteboard_id}: {data['elements'] if 'elements' in data else data}")
+            print(
+                f"Received from {client_id} on whiteboard {whiteboard_id}: {data['elements'] if 'elements' in data else data}")
             message = res
             if data.get("type") == "UPDATE_WHITEBOARD":
                 if "elements" in data:
@@ -343,11 +353,28 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
                     update_response = supabase_service.table("whiteboards").update({
                         "app_state": data["appState"]
                     }).eq("id", whiteboard_id).execute()
+                await manager.broadcast(message)
             elif data.get("type") == "NEW_MESSAGE":
-                # Optionally, handle chat messages separately if needed
-                pass
-            
-            await manager.broadcast(message)
+                print(f"New message received: {data['message']}")
+                print(f'By user: {data["sender_id"]}')
+                new_msg = supabase_service.table("chat_messages").insert({
+                    "whiteboard_id": whiteboard_id,
+                    "sender_id": data["sender_id"],
+                    "content": data["message"],
+                }).execute()
+                sender_username = supabase_service.table("profiles").select(
+                    "username").eq("user_id", data["sender_id"]).single().execute().data["username"]
+                res_message = {
+                    "type": "NEW_MESSAGE",
+                    "message": {
+                        "sender_id": data["sender_id"],
+                        "sender_username": sender_username,
+                        "content": data["message"],
+                        "timestamp": new_msg.data[0]["timestamp"]
+                    }
+                }
+                await manager.broadcast(json.dumps(res_message))
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
         print(f"Client {client_id} disconnected from whiteboard WebSocket")
@@ -356,5 +383,6 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
         except Exception as e:
             print(f"Error broadcasting disconnect: {e}")
     except Exception as e:
-        print(f"WebSocket error for {client_id} on whiteboard {whiteboard_id}: {e}")
+        print(
+            f"WebSocket error for {client_id} on whiteboard {whiteboard_id}: {e}")
         manager.disconnect(websocket)
