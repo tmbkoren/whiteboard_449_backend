@@ -25,4 +25,4 @@ EXPOSE 8000
 # `uvicorn main:app` means run the `app` object from `main.py`
 # `--host 0.0.0.0` makes the application accessible from outside the container
 # `--port 8000` specifies the port Uvicorn will listen on
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
