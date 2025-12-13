@@ -27,12 +27,6 @@ app.add_middleware(
 )
 
 
-@app.middleware("http")
-async def debug_headers(request: Request, call_next):
-    print("HEADERS SEEN BY FASTAPI:", dict(request.headers))
-    return await call_next(request)
-
-
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
@@ -347,9 +341,11 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
         while True:
             res = await websocket.receive_text()
             data = json.loads(res)
-            print(f"Data received on whiteboard WebSocket: {data}")
-            print(
-                f"Received from {client_id} on whiteboard {whiteboard_id}: {data['elements'] if 'elements' in data else data}")
+            print(f"Data received on whiteboard WebSocket: {data['type']}")
+            if data.get("type") == "UPDATE_WHITEBOARD":
+                print(f'user {client_id} sent whiteboard update')
+            if data.get("type") == "NEW_MESSAGE":
+                print(f'user {client_id} sent new chat message')
             message = res
             if data.get("type") == "UPDATE_WHITEBOARD":
                 if "elements" in data:
