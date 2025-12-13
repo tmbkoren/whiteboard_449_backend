@@ -324,8 +324,9 @@ async def get_whiteboard_details(whiteboard_id: str, token: Annotated[str, Depen
     if not membership.data:
         raise HTTPException(
             status_code=403, detail="You do not have access to this whiteboard")
-    chat_data = supabase_service.table("chat_messages").select(
-        "*").eq("whiteboard_id", whiteboard_id).order("timestamp", desc=True).limit(40).execute()
+    chat_data = supabase_service.rpc('getlastmessages', {
+        'lookup_whiteboard_id': whiteboard_id,
+    }).execute()
     return {"whiteboard": whiteboard_response.data, "chat_messages": chat_data.data}
 
 
@@ -370,7 +371,7 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
                         "sender_id": data["sender_id"],
                         "sender_username": sender_username,
                         "content": data["message"],
-                        "timestamp": new_msg.data[0]["timestamp"]
+                        "sent_at": new_msg.data[0]["sent_at"]
                     }
                 }
                 await manager.broadcast(json.dumps(res_message))
