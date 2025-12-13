@@ -38,6 +38,7 @@ class ConnectionManager:
             f"Connection added to room {room_id}. "
             f"Total connections in room: {len(self.active_connections[room_id])}"
         )
+        print("INSTANCE ID:", id(self))
 
     def disconnect(self, websocket: WebSocket, room_id: str):
         if room_id in self.active_connections:
