@@ -119,6 +119,9 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         return payload
     except JWTError:
         raise credentials_exception
+    except Exception as e:
+        print(f"Error decoding JWT: {e}")
+        raise credentials_exception
 
 
 @app.get("/api/check-onboarded")
