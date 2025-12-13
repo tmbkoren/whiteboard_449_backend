@@ -29,19 +29,24 @@ app.add_middleware(
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        # Map of room_id (whiteboard_id) -> list of WebSocket connections
+        self.active_connections: dict[str, list[WebSocket]] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, room_id: str):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        if room_id not in self.active_connections:
+            self.active_connections[room_id] = []
+        self.active_connections[room_id].append(websocket)
         print(
-            f"Connection added. Total connections: {len(self.active_connections)}")
+            f"Connection added to room {room_id}. Total connections in room: {len(self.active_connections[room_id])}")
 
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+    def disconnect(self, websocket: WebSocket, room_id: str):
+        if room_id in self.active_connections and websocket in self.active_connections[room_id]:
+            self.active_connections[room_id].remove(websocket)
+            if not self.active_connections[room_id]:
+                del self.active_connections[room_id]
         print(
-            f"Connection removed. Total connections: {len(self.active_connections)}")
+            f"Connection removed from room {room_id}. Total connections in room: {len(self.active_connections.get(room_id, []))}")
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
         try:
@@ -49,11 +54,11 @@ class ConnectionManager:
         except Exception as e:
             print(f"Error sending personal message: {e}")
 
-    async def broadcast(self, message: str):
+    async def broadcast(self, message: str, room_id: str):
         print(
-            f"Broadcasting to {len(self.active_connections)} connections: {message}")
+            f"Broadcasting to {len(self.active_connections.get(room_id, []))} connections in room {room_id}: {message}")
         disconnected = []
-        for connection in self.active_connections:
+        for connection in self.active_connections.get(room_id, []):
             try:
                 await connection.send_text(message)
             except Exception as e:
@@ -61,7 +66,7 @@ class ConnectionManager:
                 disconnected.append(connection)
         # Clean up disconnected connections
         for conn in disconnected:
-            self.disconnect(conn)
+            self.disconnect(conn, room_id)
 
 
 manager = ConnectionManager()
@@ -333,10 +338,10 @@ async def get_whiteboard_details(whiteboard_id: str, token: Annotated[str, Depen
 @app.websocket("/ws/whiteboard/{whiteboard_id}/{client_id}")
 async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_id: str):
     print(f"WebSocket connection attempt for whiteboard: {whiteboard_id}")
-    await manager.connect(websocket)
+    await manager.connect(websocket, whiteboard_id)
     print(f"Client {client_id} connected to whiteboard WebSocket")
     try:
-        await manager.broadcast(f"User {client_id} joined whiteboard {whiteboard_id}")
+        await manager.broadcast(f"User {client_id} joined whiteboard {whiteboard_id}", whiteboard_id)
         while True:
             res = await websocket.receive_text()
             data = json.loads(res)
@@ -354,7 +359,7 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
                     update_response = supabase_service.table("whiteboards").update({
                         "app_state": data["appState"]
                     }).eq("id", whiteboard_id).execute()
-                await manager.broadcast(message)
+                await manager.broadcast(message, whiteboard_id)
             elif data.get("type") == "NEW_MESSAGE":
                 print(f"New message received: {data['message']}")
                 print(f'By user: {data["sender_id"]}')
@@ -374,16 +379,16 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
                         "sent_at": new_msg.data[0]["sent_at"]
                     }
                 }
-                await manager.broadcast(json.dumps(res_message))
+                await manager.broadcast(json.dumps(res_message), whiteboard_id)
 
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        manager.disconnect(websocket, whiteboard_id)
         print(f"Client {client_id} disconnected from whiteboard WebSocket")
         try:
-            await manager.broadcast(f"User {client_id} left whiteboard {whiteboard_id}")
+            await manager.broadcast(f"User {client_id} left whiteboard {whiteboard_id}", whiteboard_id)
         except Exception as e:
             print(f"Error broadcasting disconnect: {e}")
     except Exception as e:
         print(
             f"WebSocket error for {client_id} on whiteboard {whiteboard_id}: {e}")
-        manager.disconnect(websocket)
+        manager.disconnect(websocket, whiteboard_id)
