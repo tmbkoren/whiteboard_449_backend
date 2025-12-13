@@ -71,31 +71,6 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    print(f"WebSocket connection attempt from client: {client_id}")
-    await manager.connect(websocket)
-    print(f"Client {client_id} connected to WebSocket")
-    try:
-        await manager.broadcast(f"User {client_id} joined the chat")
-        while True:
-            data = await websocket.receive_text()
-            print(f"Received from {client_id}: {data}")
-            message = f"User {client_id}: {data}"
-            await manager.broadcast(message)
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-        print(f"Client {client_id} disconnected")
-        try:
-            await manager.broadcast(f"User {client_id} left the chat")
-        except Exception as e:
-            print(f"Error broadcasting disconnect: {e}")
-    except Exception as e:
-        print(f"WebSocket error for {client_id}: {e}")
-        manager.disconnect(websocket)
-
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # This is still useful if you plan to interact with the Supabase DB elsewhere
@@ -342,7 +317,11 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
     await manager.connect(websocket, whiteboard_id)
     print(f"Client {client_id} connected to whiteboard WebSocket")
     try:
-        await manager.broadcast(f"User {client_id} joined whiteboard {whiteboard_id}", whiteboard_id)
+        await manager.broadcast(json.dumps({
+            "type": "USER_JOINED",
+            "client_id": client_id,
+            "whiteboard_id": whiteboard_id,
+        }))
         while True:
             res = await websocket.receive_text()
             data = json.loads(res)
