@@ -117,8 +117,6 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = supabase.auth.get_claims(token).get("claims", {})
         return payload
-    except JWTError:
-        raise credentials_exception
     except Exception as e:
         print(f"Error decoding JWT: {e}")
         raise credentials_exception
