@@ -27,6 +27,12 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def debug_headers(request: Request, call_next):
+    print("HEADERS SEEN BY FASTAPI:", dict(request.headers))
+    return await call_next(request)
+
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
