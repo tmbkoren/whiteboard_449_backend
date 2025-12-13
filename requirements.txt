@@ -1,6 +1,7 @@
 annotated-doc==0.0.3
 annotated-types==0.7.0
 anyio==4.11.0
+asyncio==4.0.0
 certifi==2025.10.5
 cffi==2.0.0
 click==8.3.0
@@ -40,6 +41,7 @@ python-jose==3.5.0
 python-multipart==0.0.20
 PyYAML==6.0.3
 realtime==2.24.0
+redis==7.1.0
 rich==14.2.0
 rich-toolkit==0.15.1
 rignore==0.7.6
@@ -62,4 +64,3 @@ uvicorn==0.38.0
 watchfiles==1.1.1
 websockets==15.0.1
 yarl==1.22.0
-

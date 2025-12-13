@@ -1,20 +1,29 @@
 import json
 import os
+import asyncio
 from typing import Annotated
-from fastapi import FastAPI, Depends, HTTPException, status, Request, WebSocket, WebSocketDisconnect
+
+from fastapi import (
+    FastAPI, Depends, HTTPException, status,
+    Request, WebSocket, WebSocketDisconnect
+)
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
+
 from supabase import create_client, Client, PostgrestAPIError
 from dotenv import load_dotenv
-from jose import jwt, JWTError
+import redis.asyncio as redis
 
 load_dotenv()
+
+# --------------------------------------------------
+# APP + CORS
+# --------------------------------------------------
 
 origins = [
     "http://localhost",
     "http://localhost:5173",
 ]
-
 
 app = FastAPI()
 
@@ -25,6 +34,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --------------------------------------------------
+# REDIS
+# --------------------------------------------------
+
+REDIS_URL = os.environ.get("REDIS_URL")
+if not REDIS_URL:
+    raise RuntimeError("REDIS_URL not set")
+
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+REDIS_CHANNEL = "whiteboard_events"
+
+# --------------------------------------------------
+# CONNECTION MANAGER (LOCAL ONLY)
+# --------------------------------------------------
 
 
 class ConnectionManager:
@@ -52,9 +76,10 @@ class ConnectionManager:
             f"Total connections in room: {len(self.active_connections.get(room_id, []))}"
         )
 
-    async def broadcast(self, message: str, room_id: str):
+    async def broadcast_local(self, message: str, room_id: str):
         connections = self.active_connections.get(room_id, [])
-        print(f"Broadcasting to {len(connections)} clients in room {room_id}")
+        print(
+            f"LOCAL broadcast to {len(connections)} clients in room {room_id}")
 
         disconnected = []
         for ws in connections:
@@ -70,36 +95,71 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# --------------------------------------------------
+# REDIS PUB / SUB
+# --------------------------------------------------
+
+
+async def publish(room_id: str, payload: dict):
+    await redis_client.publish(
+        REDIS_CHANNEL,
+        json.dumps({
+            "room_id": room_id,
+            "payload": payload
+        })
+    )
+
+
+@app.on_event("startup")
+async def start_redis_listener():
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(REDIS_CHANNEL)
+
+    async def reader():
+        async for msg in pubsub.listen():
+            if msg["type"] != "message":
+                continue
+
+            data = json.loads(msg["data"])
+            room_id = data["room_id"]
+            payload = data["payload"]
+
+            await manager.broadcast_local(
+                json.dumps(payload),
+                room_id
+            )
+
+    asyncio.create_task(reader())
+
+# --------------------------------------------------
+# AUTH + SUPABASE
+# --------------------------------------------------
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# This is still useful if you plan to interact with the Supabase DB elsewhere
 supabase_url: str = os.environ.get("SUPABASE_URL")
 supabase_key: str = os.environ.get("SUPABASE_KEY")
 supabase_service_role_key: str = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
 supabase: Client = create_client(supabase_url, supabase_key)
 supabase_service: Client = create_client(
-    supabase_url, supabase_service_role_key)
+    supabase_url, supabase_service_role_key
+)
 
-
-# Get the JWT secret from environment variables
 JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET")
 if not JWT_SECRET:
-    raise ValueError("SUPABASE_JWT_SECRET not set in .env file")
+    raise ValueError("SUPABASE_JWT_SECRET not set")
 
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
     try:
         payload = supabase.auth.get_claims(token).get("claims", {})
         return payload
-    except Exception as e:
-        print(f"Error decoding JWT: {e}")
-        raise credentials_exception
-
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+        )
 
 @app.get("/api/check-onboarded")
 async def check_onboarded(user: dict = Depends(get_current_user)):
@@ -311,40 +371,33 @@ async def get_whiteboard_details(whiteboard_id: str, token: Annotated[str, Depen
 
 
 @app.websocket("/ws/whiteboard/{whiteboard_id}/{client_id}")
-async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_id: str):
+async def whiteboard_websocket(
+    websocket: WebSocket,
+    whiteboard_id: str,
+    client_id: str
+):
     print(f"WebSocket connection attempt for whiteboard: {whiteboard_id}")
     await manager.connect(websocket, whiteboard_id)
-    print(f"Client {client_id} connected to whiteboard WebSocket")
 
-    # USER JOINED (JSON ONLY)
-    await manager.broadcast(json.dumps({
+    await publish(whiteboard_id, {
         "type": "USER_JOINED",
         "client_id": client_id,
         "whiteboard_id": whiteboard_id,
-    }), whiteboard_id)
+    })
 
     try:
         while True:
             raw = await websocket.receive_text()
 
-            # SAFELY PARSE JSON
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
-                print("Ignoring non-JSON message:", raw)
-                continue
-
-            if not isinstance(data, dict):
-                print("Ignoring non-object message:", data)
                 continue
 
             msg_type = data.get("type")
-            print(f"Data received on whiteboard WebSocket: {msg_type}")
 
-            # ---------------- WHITEBOARD UPDATE ----------------
+            # -------- WHITEBOARD UPDATE --------
             if msg_type == "UPDATE_WHITEBOARD":
-                print(f"user {client_id} sent whiteboard update")
-
                 if "elements" in data:
                     supabase_service.table("whiteboards").update({
                         "elements": data["elements"]
@@ -355,12 +408,10 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
                         "app_state": data["appState"]
                     }).eq("id", whiteboard_id).execute()
 
-                await manager.broadcast(json.dumps(data), whiteboard_id)
+                await publish(whiteboard_id, data)
 
-            # ---------------- CHAT MESSAGE ----------------
+            # -------- CHAT MESSAGE --------
             elif msg_type == "NEW_MESSAGE":
-                print(f"user {client_id} sent new chat message")
-
                 new_msg = supabase_service.table("chat_messages").insert({
                     "whiteboard_id": whiteboard_id,
                     "sender_id": data["sender_id"],
@@ -374,7 +425,7 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
                     .execute() \
                     .data["username"]
 
-                res_message = {
+                await publish(whiteboard_id, {
                     "type": "NEW_MESSAGE",
                     "message": {
                         "sender_id": data["sender_id"],
@@ -382,21 +433,16 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
                         "content": data["message"],
                         "sent_at": new_msg.data[0]["sent_at"]
                     }
-                }
-
-                await manager.broadcast(json.dumps(res_message), whiteboard_id)
+                })
 
     except WebSocketDisconnect:
         manager.disconnect(websocket, whiteboard_id)
-        print(f"Client {client_id} disconnected from whiteboard WebSocket")
-
-        await manager.broadcast(json.dumps({
+        await publish(whiteboard_id, {
             "type": "USER_LEFT",
             "client_id": client_id,
             "whiteboard_id": whiteboard_id,
-        }), whiteboard_id)
+        })
 
     except Exception as e:
-        print(
-            f"WebSocket error for {client_id} on whiteboard {whiteboard_id}: {e}")
+        print(f"WebSocket error: {e}")
         manager.disconnect(websocket, whiteboard_id)
