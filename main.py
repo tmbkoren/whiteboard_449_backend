@@ -51,7 +51,7 @@ class ConnectionManager:
 
     async def broadcast(self, message: str):
         print(
-            f"Broadcasting to {len(self.active_connections)} connections: {message}")
+            f"Broadcasting to {len(self.active_connections)} connections: {message['type']}")
         disconnected = []
         for connection in self.active_connections:
             try:
