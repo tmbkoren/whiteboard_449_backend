@@ -56,7 +56,7 @@ class ConnectionManager:
 
     async def broadcast(self, message: str, room_id: str):
         print(
-            f"Broadcasting to {len(self.active_connections.get(room_id, []))} connections in room {room_id}: {message}")
+            f"Broadcasting to {len(self.active_connections)} connections: {message['type']}")
         disconnected = []
         for connection in self.active_connections.get(room_id, []):
             try:
@@ -122,7 +122,8 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = supabase.auth.get_claims(token).get("claims", {})
         return payload
-    except JWTError:
+    except Exception as e:
+        print(f"Error decoding JWT: {e}")
         raise credentials_exception
 
 
@@ -345,9 +346,11 @@ async def whiteboard_websocket(websocket: WebSocket, whiteboard_id: str, client_
         while True:
             res = await websocket.receive_text()
             data = json.loads(res)
-            print(f"Data received on whiteboard WebSocket: {data}")
-            print(
-                f"Received from {client_id} on whiteboard {whiteboard_id}: {data['elements'] if 'elements' in data else data}")
+            print(f"Data received on whiteboard WebSocket: {data['type']}")
+            if data.get("type") == "UPDATE_WHITEBOARD":
+                print(f'user {client_id} sent whiteboard update')
+            if data.get("type") == "NEW_MESSAGE":
+                print(f'user {client_id} sent new chat message')
             message = res
             if data.get("type") == "UPDATE_WHITEBOARD":
                 if "elements" in data:
